@@ -42,6 +42,12 @@ const approvedMilestones: Array<{ type: string; payload: unknown }> = [];
 /** Current indexer lag in ledgers (latestChainLedger - lastIndexedLedger). Reset after each poll. */
 export let indexerLedgerLag = 0;
 
+/** Epoch ms of the last successful indexEvents() run (0 = never succeeded). */
+export let indexerLastSuccessAt = 0;
+
+/** Lifetime count of poll failures (thrown errors in indexEvents()). */
+export let indexerPollFailuresTotal = 0;
+
 /** Threshold in ledgers above which a warning is logged. Configurable via INDEXER_LAG_WARN_THRESHOLD. */
 function getLagWarnThreshold(): number {
   return parseInt(process.env.INDEXER_LAG_WARN_THRESHOLD ?? '100', 10);
@@ -456,9 +462,11 @@ export async function indexEvents(): Promise<void> {
   }
 
   indexerLedgerLag = Math.max(0, response.latestLedger - latest.ledger);
+  indexerLastSuccessAt = Date.now();
   } catch (err) {
     span.recordException(err as Error);
     span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+    indexerPollFailuresTotal += 1;
     throw err;
   } finally {
     span.end();
