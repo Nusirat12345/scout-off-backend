@@ -252,7 +252,10 @@ export async function indexEvents(): Promise<void> {
     logger.warn(`[indexer] ledger lag=${lagAfterPoll} exceeds threshold=${threshold}`);
   }
 
-  if (!response.events.length) return;
+  if (!response.events.length) {
+    indexerLastSuccessAt = Date.now();
+    return;
+  }
 
   const webhookEvents: Array<{ type: string; payload: unknown; txHash: string }> = [];
 
