@@ -17,6 +17,7 @@
  */
 
 import Redis from 'ioredis';
+import { consumeTracedMessage } from '../utils/traceContext';
 import { getRedisClient, getRedisSubscriberClient } from './redis';
 import { logger } from '../utils/logger';
 
@@ -54,8 +55,11 @@ export async function initSecurityEventSubscriber(): Promise<void> {
     // Handle incoming messages
     subscriber.on('message', async (channel: string, message: string) => {
       try {
-        const payload = JSON.parse(message);
-        await handleSecurityEvent(channel, payload);
+        await consumeTracedMessage(message, 'redis.security.consume', async (payload) => {
+          if (payload && typeof payload === 'object') {
+            await handleSecurityEvent(channel, payload as Record<string, unknown>);
+          }
+        }, { 'messaging.destination.name': channel });
       } catch (err) {
         logger.warn(`[securityEventPubSub] failed to parse message on ${channel}:`, err);
       }
@@ -118,7 +122,7 @@ export async function handleSecurityEvent(channel: string, payload: Record<strin
         const { onTokenRevokedRemote } = await import('./tokenBlocklist');
         const tokenHash = payload.token_hash as string;
         if (tokenHash) {
-          onTokenRevokedRemote(tokenHash);
+          await onTokenRevokedRemote(tokenHash);
           logger.debug(`[securityEventPubSub] processed token_revoked`);
         }
         break;

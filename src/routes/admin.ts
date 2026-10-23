@@ -55,6 +55,7 @@ import { validateBody, validateJsonBodyOrPassThrough, validateQuery } from '../m
 import { validatorWalletSchema } from '../validators/admin';
 import { emptyBodySchema, ignoredBodySchema } from '../validators/emptyBody';
 import config from '../config';
+import { getRetentionDryRun } from '../controllers/retentionController';
 
 /** Stricter rate limit for bulk import — 5 requests per minute per IP (relaxed in tests). */
 const importRateLimit = rateLimit({
@@ -876,5 +877,12 @@ router.route('/webhooks/:id/summary')
 router.route('/fees/config')
   .post(requireRole('admin'), validateBody(updatePlatformFeeSchema), updatePlatformFeeController)
   .all(methodNotAllowed(['POST']));
+
+/**
+ * GET /api/admin/retention/dry-run
+ * Preview retention candidate counts without deleting rows or writing archives.
+ * @response 200 { success: true, dryRun: true, data: RetentionResult[] }
+ */
+router.get('/retention/dry-run', requireRole('admin'), getRetentionDryRun);
 
 export default router;

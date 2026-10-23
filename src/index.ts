@@ -28,6 +28,7 @@ import {
 } from "./middleware/metrics";
 import { incUnhandledRejections } from "./middleware/metrics";
 import { drainAllSessions, setAcceptingSseSessions } from "./routes/events";
+import { startRetentionJob, stopRetentionJob } from './services/retention';
 import { applyHttpTimeouts } from "./httpServer";
 import { runShutdown } from "./shutdown";
 
@@ -83,6 +84,7 @@ async function start() {
     }
   }
 
+  startRetentionJob();
   await startServer();
 }
 
@@ -272,6 +274,7 @@ async function startServer() {
         clearInterval(reconcileInterval);
         clearInterval(divergenceInterval);
         clearInterval(auditVerifyInterval);
+        void stopRetentionJob();
       },
       getInFlightJobs: () => inFlightJobs,
       drainSse: drainAllSessions,
@@ -282,6 +285,7 @@ async function startServer() {
         logger.info("Redis connections closed");
       },
       closeDb: async () => {
+        await stopRetentionJob();
         await closeDb();
         logger.info("Database connection closed");
       },

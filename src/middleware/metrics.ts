@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { retentionMetrics } from '../services/retentionMetrics';
 import { ipReputationCounters, resetIpReputationCounters } from '../services/ipReputation';
 import { performance } from 'perf_hooks';
 
@@ -918,6 +919,7 @@ export function serializeMetrics(extras: SerializeMetricsExtras = {}): string {
   lines.push('# TYPE scout_off_tier_divergence_total counter');
   lines.push(`scout_off_tier_divergence_total ${getTierDivergenceForMetrics()}`);
 
+  lines.push(...retentionMetrics());
   // ─── Runtime metrics (process CPU, RSS, heap, event-loop lag, GC, handles) ────
   lines.push('# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds');
   lines.push('# TYPE process_cpu_seconds_total counter');

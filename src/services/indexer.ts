@@ -54,6 +54,7 @@ export function getIndexedContractIds(): string[] {
     config.progressContractId,
     config.subscriptionContractId,
     config.connectionContractId,
+    config.playerTokenContractId,
   ].filter((id, i, arr) => Boolean(id) && arr.indexOf(id) === i);
 }
 
@@ -116,6 +117,22 @@ export function normalizeSorobanEvent(raw: {
   const nativeValue = raw.value ? scValToNative(raw.value as never) : undefined;
   const tuple = Array.isArray(nativeValue) ? nativeValue : [];
   let payload: Record<string, unknown>;
+
+  if (['role_granted', 'role_revoked'].includes(rawType)) {
+    return { type, payload: {
+      role: nativeText(topics[1] ? scValToNative(topics[1] as never) : undefined),
+      account: nativeText(tuple[0]),
+      sender: nativeText(tuple[1]),
+    } };
+  }
+  if (rawType === 'role_admin_changed') {
+    return { type, payload: {
+      role: nativeText(topics[1] ? scValToNative(topics[1] as never) : undefined),
+      previous_admin_role: nativeText(tuple[0]),
+      admin_role: nativeText(tuple[1]),
+      sender: nativeText(tuple[2]),
+    } };
+  }
 
   if (rawType === 'player_rg') {
     const onChainPlayerId = nativeText(tuple[0]);
@@ -392,9 +409,15 @@ export async function indexEvents(): Promise<void> {
 
   const contractIds = getIndexedContractIds();
 
+  // Soroban accepts at most five contract IDs per filter.
+  const indexedContracts = contractIds.length ? contractIds : [config.contractId];
+  const filters = [];
+  for (let i = 0; i < indexedContracts.length; i += 5) {
+    filters.push({ type: 'contract' as const, contractIds: indexedContracts.slice(i, i + 5) });
+  }
   const response = await server.getEvents({
     startLedger: fromLedger > 0 ? fromLedger : 1,
-    filters: [{ type: 'contract', contractIds: contractIds.length ? contractIds : [config.contractId] }],
+    filters,
   });
   span.setAttribute('indexer.ledger_end', response.latestLedger);
   span.setAttribute('indexer.events_processed', response.events.length);
@@ -408,7 +431,7 @@ export async function indexEvents(): Promise<void> {
 
   if (!response.events.length) return;
 
-  const webhookEvents: Array<{ type: string; payload: unknown; txHash: string }> = [];
+  const webhookEvents: Array<{ type: string; payload: unknown; txHash: string; ledger: number }> = [];
 
   // NOTE: this used to be (and, on main, still is) a single synchronous
   // db.transaction() wrapping the whole batch, including reorg detection.
@@ -614,7 +637,7 @@ export async function indexEvents(): Promise<void> {
               ].filter(Boolean).join(', ')})`,
             );
           }
-          webhookEvents.push({ type, payload, txHash: event.txHash });
+          webhookEvents.push({ type, payload, txHash: event.txHash, ledger: event.ledger });
         } else if (type === 'milestone_approved') {
           const playerId = payload.player_id as string;
           if (playerId) {
@@ -628,10 +651,11 @@ export async function indexEvents(): Promise<void> {
             const cache = getCache();
             cache.invalidatePlayerCache(playerId);
           }
-          webhookEvents.push({ type, payload, txHash: event.txHash });
+          webhookEvents.push({ type, payload, txHash: event.txHash, ledger: event.ledger });
         }
       },
       span,
+      { 'stellar.ledger': event.ledger, 'scoutoff.event_type': type },
     );
 
     return outcome;
@@ -678,7 +702,9 @@ export async function indexEvents(): Promise<void> {
       // rest of the batch.
       if (outcome === 'applied') {
         try {
-          broadcastIndexedEvent(event);
+          await withRestoredCorrelation(event.txHash, 'indexer.sseDispatch', async () => {
+            broadcastIndexedEvent(event);
+          }, span, { 'stellar.ledger': event.ledger, 'scoutoff.event_type': normalizeSorobanEvent(event.raw).type });
         } catch (err) {
           logger.warn(
             { err, tx_hash: event.txHash },
@@ -708,15 +734,15 @@ export async function indexEvents(): Promise<void> {
   }
 
   // 4. Dispatch webhooks for indexed events (milestone_submitted, milestone_approved)
-  for (const { type, payload, txHash } of webhookEvents) {
+  await Promise.all(webhookEvents.map(({ type, payload, txHash, ledger }) =>
     withRestoredCorrelation(txHash, 'indexer.webhookDispatch', async () => {
       await dispatchEventWebhook(type, payload);
-    }, span).catch((err: unknown) => {
+    }, span, { 'stellar.ledger': ledger, 'scoutoff.event_type': type }).catch((err: unknown) => {
       logger.warn(
         `[indexer] webhook dispatch failed for ${type}: ${err instanceof Error ? err.message : String(err)}`,
       );
-    });
-  }
+    }),
+  ));
 
   indexerLedgerLag = Math.max(0, response.latestLedger - latest.ledger);
   } catch (err) {

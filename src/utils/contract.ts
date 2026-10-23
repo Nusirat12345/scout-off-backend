@@ -91,7 +91,7 @@ export async function invokeContract(
   let sendResult;
   try {
     sendResult = await server.sendTransaction(preparedTx);
-    if (sendResult.hash) recordTxCorrelation(sendResult.hash);
+    if (sendResult.hash) await recordTxCorrelation(sendResult.hash);
   } catch (err) {
     throw new ContractNetworkError(`Submit request failed: ${(err as Error).message}`);
   }

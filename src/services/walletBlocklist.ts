@@ -27,6 +27,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { encodeTracedMessage } from '../utils/traceContext';
 import { logger } from '../utils/logger';
 import config from '../config';
 import { getRedisClient } from './redis';
@@ -90,7 +91,7 @@ export async function blocklistWallet(wallet: string, reason: string | null = nu
     const redis = getRedisClient();
     if (redis) {
       try {
-        await redis.publish(REDIS_CHANNEL_WALLET_BLOCKED, JSON.stringify({ wallet }));
+        await redis.publish(REDIS_CHANNEL_WALLET_BLOCKED, encodeTracedMessage({ wallet }));
       } catch (err) {
         logger.warn(`[walletBlocklist] Redis publish failed for ${wallet}:`, err);
         // Continue; in-process effect still works, cross-instance effect deferred to sweep
@@ -115,7 +116,7 @@ export async function unblocklistWallet(wallet: string): Promise<boolean> {
       const redis = getRedisClient();
       if (redis) {
         try {
-          await redis.publish(REDIS_CHANNEL_WALLET_UNBLOCKED, JSON.stringify({ wallet }));
+          await redis.publish(REDIS_CHANNEL_WALLET_UNBLOCKED, encodeTracedMessage({ wallet }));
         } catch (err) {
           logger.warn(`[walletBlocklist] Redis publish failed for unblock ${wallet}:`, err);
         }
