@@ -918,6 +918,14 @@ const config = {
   },
 
   // ── Indexer settings ──────────────────────────────────────────────────
+  /**
+   * How often the contract-event indexer polls Soroban for new ledgers, in
+   * milliseconds (#1568). Stellar closes a ledger roughly every 5 seconds, so
+   * polling faster than that mostly burns RPC quota without new events. Raise
+   * it on testnet/staging to cut RPC usage, lower it for local sandboxes.
+   * Values below 1 s are rejected because they only multiply RPC load.
+   */
+  indexerPollIntervalMs: parseNumericEnv('INDEXER_POLL_INTERVAL_MS', process.env.INDEXER_POLL_INTERVAL_MS, 5000, { min: 1000, max: 300000, integer: true }),
   indexer: {
     /** Finality margin: ledgers to hold back from tip to avoid reorgs. */
     finalityMargin: parseNumericEnv('INDEXER_FINALITY_MARGIN', process.env.INDEXER_FINALITY_MARGIN, 10, { min: 0, max: 1000, integer: true }),
@@ -954,16 +962,22 @@ const config = {
     })(),
   },
 
-  // ── Circuit breakers ──────────────────────────────────────────────────
-  // Default circuit breaker thresholds for generic outbound calls (Stellar RPC, etc.).
+  // ── Circuit breakers (#1564) ──────────────────────────────────────────
+  // Thresholds are parsed and validated here so a bad value (`0`, `NaN`,
+  // negative) fails at startup instead of leaving a breaker permanently open
+  // or permanently passing traffic. Empty keys read these values; the breaker
+  // utilities themselves never touch process.env.
   circuitBreaker: {
-    failureThreshold: parseNumericEnv('CIRCUIT_BREAKER_FAILURE_THRESHOLD', process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD, 5, { min: 1, integer: true }),
-    resetTimeoutMs: parseNumericEnv('CIRCUIT_BREAKER_RESET_TIMEOUT_MS', process.env.CIRCUIT_BREAKER_RESET_TIMEOUT_MS, 30000, { min: 1, integer: true }),
-  },
-  // IPFS pinning circuit breaker (often tighter than generic).
-  ipfsBreaker: {
-    failureThreshold: parseNumericEnv('IPFS_BREAKER_FAILURE_THRESHOLD', process.env.IPFS_BREAKER_FAILURE_THRESHOLD, 5, { min: 1, integer: true }),
-    resetTimeoutMs: parseNumericEnv('IPFS_BREAKER_RESET_TIMEOUT_MS', process.env.IPFS_BREAKER_RESET_TIMEOUT_MS, 30000, { min: 1, integer: true }),
+    /** Generic breaker for outbound calls (Stellar RPC, etc.). */
+    default: {
+      failureThreshold: parseNumericEnv('CIRCUIT_BREAKER_FAILURE_THRESHOLD', process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD, 5, { min: 1, integer: true }),
+      resetTimeoutMs: parseNumericEnv('CIRCUIT_BREAKER_RESET_TIMEOUT_MS', process.env.CIRCUIT_BREAKER_RESET_TIMEOUT_MS, 30000, { min: 1000, integer: true }),
+    },
+    /** IPFS / Pinata pinning breaker (often tuned tighter than the generic one). */
+    ipfs: {
+      failureThreshold: parseNumericEnv('IPFS_BREAKER_FAILURE_THRESHOLD', process.env.IPFS_BREAKER_FAILURE_THRESHOLD, 5, { min: 1, integer: true }),
+      resetTimeoutMs: parseNumericEnv('IPFS_BREAKER_RESET_TIMEOUT_MS', process.env.IPFS_BREAKER_RESET_TIMEOUT_MS, 30000, { min: 1000, integer: true }),
+    },
   },
 
   // ── Database migration validation (#1318) ─────────────────────────────
