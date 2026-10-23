@@ -303,7 +303,12 @@ function getReadinessTimeouts(): { db: number; ipfs: number; stellar: number } {
 
 export interface ProbeResult {
   status: 'ok' | 'unavailable' | 'disabled';
-  ms: number;
+  /** Measured probe duration in milliseconds. Omitted for in-memory checks that do no I/O. */
+  ms?: number;
+  /** Current indexer lag in ledgers. Present only on the indexer probe. */
+  lag?: number;
+  /** Maximum allowed indexer lag before the probe is considered unavailable. Present only on the indexer probe. */
+  maxLag?: number;
 }
 
 async function checkReadiness(): Promise<Record<string, ProbeResult>> {
@@ -346,16 +351,17 @@ async function checkReadiness(): Promise<Record<string, ProbeResult>> {
       );
       return { status: outcome === 'ok' ? 'ok' : 'unavailable', ms: Date.now() - t0 };
     })(),
-    (async (): Promise<'ok' | 'unavailable' | 'disabled'> => {
+    (async (): Promise<ProbeResult> => {
       // If max lag is 0, the check is disabled
-      if (config.readinessMaxLag === 0) return 'disabled';
-      
+      if (config.readinessMaxLag === 0) return { status: 'disabled' };
+
       // During grace period, always report ok regardless of lag
       const uptimeMs = Date.now() - processStartTime;
-      if (uptimeMs < config.readinessGracePeriodMs) return 'ok';
-      
+      if (uptimeMs < config.readinessGracePeriodMs) return { status: 'ok', lag: indexerLedgerLag, maxLag: config.readinessMaxLag };
+
       // After grace period, check if lag is within threshold
-      return indexerLedgerLag <= config.readinessMaxLag ? 'ok' : 'unavailable';
+      const status = indexerLedgerLag <= config.readinessMaxLag ? 'ok' : 'unavailable';
+      return { status, lag: indexerLedgerLag, maxLag: config.readinessMaxLag };
     })(),
   ]);
 
@@ -363,7 +369,7 @@ async function checkReadiness(): Promise<Record<string, ProbeResult>> {
     db: dbResult,
     ipfs: ipfsResult,
     stellar: stellarResult,
-    indexer: { status: indexerResult, ms: 0 },
+    indexer: indexerResult,
   };
 
   return services;
