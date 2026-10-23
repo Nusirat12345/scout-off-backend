@@ -369,37 +369,32 @@ async function checkReadiness(): Promise<Record<string, ProbeResult>> {
   return services;
 }
 
-app.get('/ready', async (_req, res) => {
+// ─── Shared readiness handler (#1576) ─────────────────────────────────────────
+//
+// A single handler serves both /ready and /health/readiness so future changes
+// (non-critical deps, Retry-After headers, etc.) only need to be made once.
+// Both paths get createTimeout(5_000): consistent behaviour for all Kubernetes
+// probe targets. See docs/readiness-check.md for the rationale.
+//
+// Note: /health (liveness) uses probeDb (SELECT 1 — read-only) while readiness
+// uses probeDbWritable (write heartbeat upsert). This is intentional — readiness
+// catches disk-full and read-only DB regressions that a liveness probe should not
+// block on.
+async function readinessHandler(_req: express.Request, res: express.Response): Promise<void> {
   if (isDraining()) {
     res.status(503).json({ status: 'draining' });
     return;
   }
   const services = await checkReadiness();
   const allOk = Object.values(services).every(v => v.status === 'ok' || v.status === 'disabled');
-  if (allOk) {
-    res.json({ status: 'ok', services });
-  } else {
-    res.status(503).json({ status: 'degraded', services });
-  }
-});
+  res.status(allOk ? 200 : 503).json({ status: allOk ? 'ok' : 'degraded', services });
+}
+
+app.get(['/ready', '/health/readiness'], createTimeout(5_000), readinessHandler);
 
 // Kubernetes-style liveness and readiness probes
 app.get('/health/liveness', createTimeout(5_000), (_req, res) => {
   res.json({ status: 'ok' });
-});
-
-app.get('/health/readiness', createTimeout(5_000), async (_req, res) => {
-  if (isDraining()) {
-    res.status(503).json({ status: 'draining' });
-    return;
-  }
-  const services = await checkReadiness();
-  const allOk = Object.values(services).every(v => v.status === 'ok' || v.status === 'disabled');
-  if (allOk) {
-    res.json({ status: 'ok', services });
-  } else {
-    res.status(503).json({ status: 'degraded', services });
-  }
 });
 
 // Operator-facing dependency health endpoint reporting version and latency per downstream (admin-gated)
