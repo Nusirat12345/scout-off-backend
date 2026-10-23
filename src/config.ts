@@ -571,6 +571,16 @@ const config = {
     // multi-subscriber deployments should manage subscriptions in the DB instead.
     secret: process.env.WEBHOOK_SECRET ?? '',
     /**
+     * Enable legacy single-value signature header (`X-Webhook-Signature: sha256=...`)
+     * during the deprecation period. Set to `false` to send only the new versioned
+     * header (`X-Webhook-Signature-V1: t=...,v1=...`).
+     *
+     * Default: true (legacy header enabled) during migration window.
+     * Once all subscribers have been verified to support the new header, set to `false`
+     * to send only the versioned format.
+     */
+    enableLegacySignature: process.env.WEBHOOK_LEGACY_SIGNATURE !== 'false',
+    /**
      * Per-attempt timeout (ms) for outbound webhook delivery requests (#691).
      * An unresponsive subscriber is aborted after this window and the attempt
      * is treated as a failure, proceeding to retry/backoff or dead-lettering

@@ -8,9 +8,8 @@
     "strict": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "skipLibCheck": true,
-    "jsx": "react"
+    "skipLibCheck": true
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist", "src/frontend"]
+  "exclude": ["node_modules", "dist"]
 }

@@ -106,6 +106,7 @@ try {
         baseDelayMs: 500,
         maxDelayMs: 5000,
         secret: subscription?.secret,
+        subscription,
       });
 
       markWebhookDeadLetterReplayed(id);

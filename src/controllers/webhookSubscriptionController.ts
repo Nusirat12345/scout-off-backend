@@ -21,7 +21,7 @@ import {
   deleteWebhookSubscription,
 } from '../db';
 import { decryptWebhookSecret } from '../utils/webhookSecretCipher';
-import { signWebhookPayload } from '../services/webhooks';
+import { signWebhookPayload, buildSignatureHeader } from '../services/webhooks';
 import { sendForbidden } from '../utils/authError';
 import { logger } from '../utils/logger';
 import type { ContractEventType } from '../types';
@@ -245,7 +245,8 @@ try {
     const rawBody = JSON.stringify(payload);
     const plainSecret = decryptWebhookSecret(row.secret);
     const timestamp = String(Math.floor(Date.now() / 1000));
-    const signature = signWebhookPayload(rawBody, plainSecret, timestamp);
+    const { versioned, legacy } = buildSignatureHeader(rawBody, plainSecret, timestamp, row.previous_secret ?? null, row.previous_secret_expires_at ? Number(row.previous_secret_expires_at) : null);
+    const signatureHeader = legacy ?? versioned;
 
     try {
       const response = await fetch(row.url, {
@@ -254,7 +255,9 @@ try {
         headers: {
           'Content-Type': 'application/json',
           'X-Webhook-Timestamp': timestamp,
-          'X-Webhook-Signature': signature,
+          'X-Webhook-Signature': signatureHeader,
+          // Also send the versioned header
+          'X-Webhook-Signature-V1': versioned,
         },
       });
 
