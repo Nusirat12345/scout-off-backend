@@ -136,7 +136,14 @@ export class RetryingCircuitBreaker {
   private nextAttemptAt = 0;
   private config: CircuitBreakerConfig;
 
-  constructor(config: Partial<CircuitBreakerConfig> = {}) {
+  /** Human-readable name used in metrics labels. */
+  readonly name: string;
+
+  /** Optional hook invoked after every state transition. */
+  onStateChange?: (from: string, to: string) => void;
+
+  constructor(config: Partial<CircuitBreakerConfig> & { name?: string } = {}) {
+    this.name = config.name ?? 'unknown';
     this.config = {
       failureThreshold: 3,
       resetTimeoutMs: 10000,
@@ -146,10 +153,19 @@ export class RetryingCircuitBreaker {
     };
   }
 
+  /** Returns a normalized lowercase CircuitState compatible with the plain CircuitBreaker. */
+  getState(): CircuitState {
+    if (this.state === 'OPEN') return 'open';
+    if (this.state === 'HALF_OPEN') return 'half-open';
+    return 'closed';
+  }
+
   async execute<T>(fn: () => Promise<T>): Promise<T> {
     if (this.state === 'OPEN') {
       if (Date.now() >= this.nextAttemptAt) {
+        const prev = this.state;
         this.state = 'HALF_OPEN';
+        this.onStateChange?.(prev, 'HALF_OPEN');
       } else {
         throw new CircuitBreakerError('ServiceUnavailable: Circuit breaker is OPEN');
       }
@@ -196,17 +212,23 @@ export class RetryingCircuitBreaker {
   }
 
   private onSuccess() {
+    if (this.state !== 'CLOSED') {
+      const prev = this.state;
+      this.state = 'CLOSED';
+      this.onStateChange?.(prev, 'CLOSED');
+    }
     this.failureCount = 0;
-    this.state = 'CLOSED';
   }
 
   private onFailure() {
     this.failureCount++;
     if (this.failureCount >= this.config.failureThreshold) {
+      const prev = this.state;
       this.state = 'OPEN';
       this.nextAttemptAt = Date.now() + this.config.resetTimeoutMs;
+      if (prev !== 'OPEN') this.onStateChange?.(prev, 'OPEN');
     }
   }
 }
 
-export const stellarBreaker = new RetryingCircuitBreaker();
+export const stellarBreaker = new RetryingCircuitBreaker({ name: 'stellar' });

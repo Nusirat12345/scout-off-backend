@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ipReputationCounters, resetIpReputationCounters } from '../services/ipReputation';
+import type { CircuitState } from '../utils/circuitBreaker';
 
 // ── Tier divergence counter injection (#1132) ──────────────────────────────────
 //
@@ -333,6 +334,79 @@ export function resetWebhookDeadLetterInsertTimestamps(): void {
   webhookDeadLetterInsertTimestamps.length = 0;
 }
 
+// ─── Circuit breaker state gauges & transition counters (#1573) ───────────────
+//
+// scout_off_circuit_breaker_state{breaker}              — 0=closed, 1=half-open, 2=open
+// scout_off_circuit_breaker_transitions_total{breaker,to} — lifetime transitions
+
+/** Maps CircuitState to an integer suitable for a gauge. */
+const CIRCUIT_STATE_VALUE: Record<CircuitState, number> = {
+  closed: 0,
+  'half-open': 1,
+  open: 2,
+};
+
+/** Live getter functions registered by each breaker (keyed by breaker name). */
+const _circuitBreakerGetters: Map<string, () => CircuitState> = new Map();
+
+/** Transition counters: key is `${breakerName}:${toState}`. */
+const _circuitBreakerTransitions: Map<string, number> = new Map();
+
+/**
+ * Minimal interface that both CircuitBreaker and RetryingCircuitBreaker satisfy
+ * after the #1573 changes.
+ */
+export interface RegisterableBreaker {
+  readonly name: string;
+  getState(): CircuitState;
+  onStateChange?: ((from: string, to: string) => void) | undefined;
+}
+
+/**
+ * Register a circuit breaker so its state is exported as a gauge at scrape time
+ * and its transitions are counted.
+ *
+ * The breaker's `onStateChange` hook is set here; callers must not overwrite it
+ * after registration.
+ */
+export function registerCircuitBreaker(breaker: RegisterableBreaker): void {
+  const name = breaker.name;
+  _circuitBreakerGetters.set(name, (): CircuitState => breaker.getState());
+  breaker.onStateChange = (_from: string, to: string) => {
+    // Normalize 'HALF_OPEN' → 'half-open' etc. for consistent label values
+    const normalizedTo = to.toLowerCase().replace('_', '-') as CircuitState;
+    const key = `${name}:${normalizedTo}`;
+    _circuitBreakerTransitions.set(key, (_circuitBreakerTransitions.get(key) ?? 0) + 1);
+  };
+}
+
+/** Returns current state gauge value (0/1/2) for the named breaker, or -1 if unknown. */
+export function getCircuitBreakerStateValue(name: string): number {
+  const getter = _circuitBreakerGetters.get(name);
+  if (!getter) return -1;
+  return CIRCUIT_STATE_VALUE[getter()];
+}
+
+/** Returns a snapshot of all breaker-state gauge values keyed by breaker name. */
+export function getCircuitBreakerStates(): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const [name, getter] of _circuitBreakerGetters) {
+    result[name] = CIRCUIT_STATE_VALUE[getter()];
+  }
+  return result;
+}
+
+/** Returns a snapshot of all transition counters keyed by `${breaker}:${to}`. */
+export function getCircuitBreakerTransitions(): Record<string, number> {
+  return Object.fromEntries(_circuitBreakerTransitions);
+}
+
+/** Test helper — clear all registered breakers and their counters. */
+export function resetCircuitBreakerMetrics(): void {
+  _circuitBreakerGetters.clear();
+  _circuitBreakerTransitions.clear();
+}
+
 /** Resets every metric store. Intended for test isolation. */
 export function resetMetrics(): void {
   Object.keys(metricsStore).forEach((k) => delete metricsStore[k]);
@@ -603,6 +677,23 @@ export function serializeMetrics(extras: SerializeMetricsExtras = {}): string {
   lines.push('# HELP scout_off_tier_divergence_total Total number of player tier divergence events detected since process start');
   lines.push('# TYPE scout_off_tier_divergence_total counter');
   lines.push(`scout_off_tier_divergence_total ${getTierDivergenceForMetrics()}`);
+
+  // Circuit breaker state gauges and transition counters (#1573).
+  const cbStates = getCircuitBreakerStates();
+  lines.push('# HELP scout_off_circuit_breaker_state Circuit breaker state (0=closed, 1=half-open, 2=open)');
+  lines.push('# TYPE scout_off_circuit_breaker_state gauge');
+  for (const [name, value] of Object.entries(cbStates)) {
+    lines.push(`scout_off_circuit_breaker_state{breaker="${escapeLabelValue(name)}"} ${value}`);
+  }
+  const cbTransitions = getCircuitBreakerTransitions();
+  lines.push('# HELP scout_off_circuit_breaker_transitions_total Total circuit breaker state transitions by target state');
+  lines.push('# TYPE scout_off_circuit_breaker_transitions_total counter');
+  for (const [key, count] of Object.entries(cbTransitions)) {
+    const colonIdx = key.lastIndexOf(':');
+    const breakerName = key.slice(0, colonIdx);
+    const toState = key.slice(colonIdx + 1);
+    lines.push(`scout_off_circuit_breaker_transitions_total{breaker="${escapeLabelValue(breakerName)}",to="${escapeLabelValue(toState)}"} ${count}`);
+  }
 
   return lines.join('\n') + '\n';
 }
