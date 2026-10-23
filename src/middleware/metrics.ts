@@ -446,6 +446,10 @@ export interface SerializeMetricsExtras {
   sseConnectionsActive?: number;
   /** Optional stuck_pending_pins_count gauge value, injected by the caller. */
   stuckPendingPinsCount?: number;
+  /** Epoch ms of the last successful indexer poll (0 = never). Divided by 1000 for Prometheus. */
+  indexerLastSuccessTimestamp?: number;
+  /** Lifetime count of indexer poll failures. */
+  indexerPollFailuresTotal?: number;
 }
 
 /**
@@ -565,6 +569,17 @@ export function serializeMetrics(extras: SerializeMetricsExtras = {}): string {
     lines.push(`indexer_ledger_lag ${extras.indexerLedgerLag}`);
   }
 
+  // Indexer last success timestamp (#1574).
+  // Alert: time() - scout_off_indexer_last_success_timestamp_seconds > 60
+  lines.push('# HELP scout_off_indexer_last_success_timestamp_seconds Unix timestamp of the last successful indexer poll (0 = never succeeded)');
+  lines.push('# TYPE scout_off_indexer_last_success_timestamp_seconds gauge');
+  lines.push(`scout_off_indexer_last_success_timestamp_seconds ${(extras.indexerLastSuccessTimestamp ?? 0) / 1000}`);
+
+  // Indexer poll failure counter (#1574).
+  lines.push('# HELP scout_off_indexer_poll_failures_total Total number of indexer poll failures since process start');
+  lines.push('# TYPE scout_off_indexer_poll_failures_total counter');
+  lines.push(`scout_off_indexer_poll_failures_total ${extras.indexerPollFailuresTotal ?? 0}`);
+
   // Stuck pending IPFS pins gauge.
   const stuckPins = extras.stuckPendingPinsCount !== undefined ? extras.stuckPendingPinsCount : getStuckPendingPinsCount();
   lines.push('# HELP stuck_pending_pins_count Current number of stuck pending IPFS pins');
@@ -615,6 +630,8 @@ export function createMetricsHandler(
   getIndexerLedgerLag: () => number = () => 0,
   getSseConnectionsActive: () => number = () => 0,
   getStuckPinsCount: () => number = () => getStuckPendingPinsCount(),
+  getIndexerLastSuccessAt: () => number = () => 0,
+  getIndexerPollFailuresTotal: () => number = () => 0,
 ) {
   return (_req: Request, res: Response): void => {
     res.set('Content-Type', PROMETHEUS_CONTENT_TYPE);
@@ -622,6 +639,8 @@ export function createMetricsHandler(
       indexerLedgerLag: getIndexerLedgerLag(),
       sseConnectionsActive: getSseConnectionsActive(),
       stuckPendingPinsCount: getStuckPinsCount(),
+      indexerLastSuccessTimestamp: getIndexerLastSuccessAt(),
+      indexerPollFailuresTotal: getIndexerPollFailuresTotal(),
     }));
   };
 }
