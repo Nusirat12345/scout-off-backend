@@ -18,11 +18,11 @@ import { stellarHealth, stellarBreaker } from './services/stellar';
 import { checkHealth } from './services/ipfs';
 import { mountGraphQL } from './graphql';
 import { ErrorCode } from './utils/errorCodes';
-import { metricsMiddleware, createMetricsHandler } from './middleware/metrics';
+import { metricsMiddleware, createMetricsHandler, getStuckPendingPinsCount } from './middleware/metrics';
 import { metricsGuard } from './middleware/metricsGuard';
 import { ipReputationMiddleware } from './middleware/ipReputation';
 import { createTimeout, requestTimeout } from './middleware/timeout';
-import { indexerLedgerLag } from './services/indexer';
+import { indexerLedgerLag, indexerLastSuccessAt, indexerPollFailuresTotal } from './services/indexer';
 import { getDriver } from './db';
 import { withTimeout } from './utils/withTimeout';
 import { getVersionInfo } from './version';
@@ -335,7 +335,12 @@ app.get('/health', async (_req, res) => {
 
 export interface ProbeResult {
   status: 'ok' | 'unavailable' | 'disabled';
-  ms: number;
+  /** Measured probe duration in milliseconds. Omitted for in-memory checks that do no I/O. */
+  ms?: number;
+  /** Current indexer lag in ledgers. Present only on the indexer probe. */
+  lag?: number;
+  /** Maximum allowed indexer lag before the probe is considered unavailable. Present only on the indexer probe. */
+  maxLag?: number;
 }
 
 async function checkReadiness(): Promise<Record<string, ProbeResult>> {
@@ -376,16 +381,17 @@ async function checkReadiness(): Promise<Record<string, ProbeResult>> {
       );
       return { status: outcome === 'ok' ? 'ok' : 'unavailable', ms: Date.now() - t0 };
     })(),
-    (async (): Promise<'ok' | 'unavailable' | 'disabled'> => {
+    (async (): Promise<ProbeResult> => {
       // If max lag is 0, the check is disabled
-      if (config.readiness.maxLag === 0) return 'disabled';
+      if (config.readiness.maxLag === 0) return { status: 'disabled' };
       
       // During grace period, always report ok regardless of lag
       const uptimeMs = Date.now() - processStartTime;
-      if (uptimeMs < config.readiness.gracePeriodMs) return 'ok';
+      if (uptimeMs < config.readiness.gracePeriodMs) return { status: 'ok', lag: indexerLedgerLag, maxLag: config.readiness.maxLag };
       
       // After grace period, check if lag is within threshold
-      return indexerLedgerLag <= config.readiness.maxLag ? 'ok' : 'unavailable';
+      const status = indexerLedgerLag <= config.readiness.maxLag ? 'ok' : 'unavailable';
+      return { status, lag: indexerLedgerLag, maxLag: config.readiness.maxLag };
     })(),
   ]);
 
@@ -393,13 +399,18 @@ async function checkReadiness(): Promise<Record<string, ProbeResult>> {
     db: dbResult,
     ipfs: ipfsResult,
     stellar: stellarResult,
-    indexer: { status: indexerResult, ms: 0 },
+    indexer: indexerResult,
   };
 
   return services;
 }
 
-app.get('/ready', async (_req, res) => {
+// ─── Shared readiness handler (#1576) ─────────────────────────────────────────
+//
+// A single handler serves both /ready and /health/readiness so they can never
+// drift. Both paths get a createTimeout(5_000) guard; see docs/readiness-check.md
+// for the rationale.
+async function readinessHandler(req: express.Request, res: express.Response): Promise<void> {
   if (isDraining()) {
     res.status(503).json({ status: 'draining' });
     return;
@@ -415,39 +426,14 @@ app.get('/ready', async (_req, res) => {
     },
   );
   
-  if (allCriticalOk) {
-    res.json({ status: 'ok', services });
-  } else {
-    res.status(503).json({ status: 'degraded', services });
-  }
-});
+  res.status(allCriticalOk ? 200 : 503).json({ status: allCriticalOk ? 'ok' : 'degraded', services });
+}
+
+app.get(['/ready', '/health/readiness'], createTimeout(5_000), readinessHandler);
 
 // Kubernetes-style liveness and readiness probes
 app.get('/health/liveness', createTimeout(5_000), (_req, res) => {
   res.json({ status: 'ok' });
-});
-
-app.get('/health/readiness', createTimeout(5_000), async (_req, res) => {
-  if (isDraining()) {
-    res.status(503).json({ status: 'draining' });
-    return;
-  }
-  const services = await checkReadiness();
-  
-  // Determine if pod should be ready based on critical dependencies only
-  const criticalDeps = config.readinessCriticalDependencies;
-  const allCriticalOk = Array.from(criticalDeps).every(
-    (dep) => {
-      const probe = services[dep];
-      return !probe || probe.status === 'ok' || probe.status === 'disabled';
-    },
-  );
-  
-  if (allCriticalOk) {
-    res.json({ status: 'ok', services });
-  } else {
-    res.status(503).json({ status: 'degraded', services });
-  }
 });
 
 // Operator-facing dependency health endpoint reporting version and latency per downstream (admin-gated)
@@ -460,7 +446,13 @@ app.get(
 
 // Prometheus scrape endpoint. Protected by optional bearer token and/or CIDR allowlist.
 // Intentionally not rate-limited (standard scrape pattern).
-app.get('/metrics', metricsGuard, createMetricsHandler(() => indexerLedgerLag));
+app.get('/metrics', metricsGuard, createMetricsHandler(
+  () => indexerLedgerLag,
+  () => 0,
+  () => getStuckPendingPinsCount(),
+  () => indexerLastSuccessAt,
+  () => indexerPollFailuresTotal,
+));
 
 app.use('/auth', authRoutes);
 

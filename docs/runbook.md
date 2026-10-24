@@ -17,7 +17,7 @@ Start every investigation with the health and metrics endpoints:
 | -------- | ----------------- |
 | `GET /health` | Process liveness, Stellar RPC reachability (`healthStatus.stellar`), DB probe (`healthStatus.db`) |
 | `GET /ready`  | Readiness: `ipfs`, `db`, `stellar` — returns `503`/`degraded` when any dependency is down |
-| `GET /metrics`| Prometheus metrics: `indexer_ledger_lag`, `http_requests_total`, `http_errors_total`, `db_query_duration_seconds`, `soroban_rpc_duration_seconds`, `webhook_delivery_total`, `scout_off_webhook_dead_letters_total`, `ip_reputation_blocked_total`, `sse_connections_active`, … |
+| `GET /metrics`| Prometheus metrics: `indexer_ledger_lag`, `scout_off_indexer_last_success_timestamp_seconds`, `scout_off_indexer_poll_failures_total`, `scout_off_circuit_breaker_state`, `scout_off_circuit_breaker_transitions_total`, `http_requests_total`, `http_errors_total`, `db_query_duration_seconds`, `soroban_rpc_duration_seconds`, `webhook_delivery_total`, `scout_off_webhook_dead_letters_total`, `ip_reputation_blocked_total`, `sse_connections_active`, … |
 
 **`indexer_ledger_lag`** is the single most useful indexer signal: ledgers
 behind the chain tip after the last poll. It is exposed as
@@ -26,6 +26,21 @@ behind the chain tip after the last poll. It is exposed as
 (polls run every `INDEXER_POLL_INTERVAL_MS`, default 5 s, and
 `INDEXER_FINALITY_MARGIN` — default `10` ledgers —
 intentionally treats the tip as non-final); persistent three-figure lag is not.
+
+`scout_off_indexer_last_success_timestamp_seconds` is the Unix timestamp of the
+last successful poll, including successful polls that found no events.
+`scout_off_indexer_poll_failures_total` counts failed polls since process start.
+Alert when the indexer has not polled successfully for more than a minute:
+
+```promql
+time() - scout_off_indexer_last_success_timestamp_seconds > 60
+```
+
+Circuit breaker gauges use `0` for closed, `1` for half-open, and `2` for open.
+Inspect `scout_off_circuit_breaker_state{breaker="stellar"}` and
+`scout_off_circuit_breaker_state{breaker="ipfs"}` for current state;
+`scout_off_circuit_breaker_transitions_total{breaker,to}` counts transitions
+by destination state.
 
 ## Prometheus alerts
 

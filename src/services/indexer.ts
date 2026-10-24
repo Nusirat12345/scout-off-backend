@@ -68,6 +68,12 @@ function getCache() {
 /** Current indexer lag in ledgers (latestChainLedger - lastIndexedLedger). Reset after each poll. */
 export let indexerLedgerLag = 0;
 
+/** Epoch ms of the last successful indexEvents() run (0 = never succeeded). */
+export let indexerLastSuccessAt = 0;
+
+/** Lifetime count of poll failures (thrown errors in indexEvents()). */
+export let indexerPollFailuresTotal = 0;
+
 // ─── Payload normalisation ────────────────────────────────────────────────────
 //
 // The Soroban contract emits events with snake_case field names but some events
@@ -429,7 +435,10 @@ export async function indexEvents(): Promise<void> {
     logger.warn(`[indexer] ledger lag=${lagAfterPoll} exceeds threshold=${threshold}`);
   }
 
-  if (!response.events.length) return;
+  if (!response.events.length) {
+    indexerLastSuccessAt = Date.now();
+    return;
+  }
 
   const webhookEvents: Array<{ type: string; payload: unknown; txHash: string; ledger: number }> = [];
 
@@ -745,9 +754,11 @@ export async function indexEvents(): Promise<void> {
   ));
 
   indexerLedgerLag = Math.max(0, response.latestLedger - latest.ledger);
+  indexerLastSuccessAt = Date.now();
   } catch (err) {
     span.recordException(err as Error);
     span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+    indexerPollFailuresTotal += 1;
     throw err;
   } finally {
     span.end();

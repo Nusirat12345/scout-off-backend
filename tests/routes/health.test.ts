@@ -144,7 +144,7 @@ describe.each(READINESS_PATHS)('%s', (path) => {
     mockCheckHealth.mockResolvedValueOnce(undefined);
     const res = await request(app).get(path);
     expect(res.status).toBe(200);
-    // Each probe should report latency as a non-negative integer
+    // I/O probes report latency as ms; the indexer probe uses lag/maxLag (#1575)
     for (const key of ['db', 'ipfs', 'stellar']) {
       const probe = res.body.services[key];
       if (probe && typeof probe === 'object') {
@@ -152,6 +152,17 @@ describe.each(READINESS_PATHS)('%s', (path) => {
         expect(probe.ms).toBeGreaterThanOrEqual(0);
       }
     }
+  });
+
+  it('indexer probe includes lag and maxLag instead of ms (#1575)', async () => {
+    mockCheckHealth.mockResolvedValueOnce(undefined);
+    const res = await request(app).get(path);
+    const indexerProbe = res.body.services.indexer;
+    expect(indexerProbe).toHaveProperty('lag');
+    expect(indexerProbe).toHaveProperty('maxLag');
+    expect(typeof indexerProbe.lag).toBe('number');
+    expect(typeof indexerProbe.maxLag).toBe('number');
+    expect(indexerProbe).not.toHaveProperty('ms');
   });
 
   it('probes run concurrently — total latency is bounded by max single probe, not the sum', async () => {
@@ -359,11 +370,15 @@ describe('GET /ready and GET /health/readiness return identical responses', () =
   // Each probe reports its own measured latency (`ms`), so two requests issued
   // in parallel can legitimately differ by a millisecond. Zero the timing
   // fields before comparing — this suite asserts the two routes return the
-  // same *shape*, not the same wall-clock measurement.
+  // same *shape*, not the same wall-clock measurement. The indexer probe uses
+  // lag/maxLag instead of ms (#1575), so those fields are also normalised.
   const normalizeTiming = (body: Record<string, unknown>): Record<string, unknown> => {
-    const services = (body.services ?? {}) as Record<string, { ms?: number }>;
+    const services = (body.services ?? {}) as Record<string, { ms?: number; lag?: number; maxLag?: number }>;
     for (const probe of Object.values(services)) {
-      if (probe && typeof probe === 'object' && 'ms' in probe) probe.ms = 0;
+      if (probe && typeof probe === 'object') {
+        if ('ms' in probe) probe.ms = 0;
+        if ('lag' in probe) probe.lag = 0;
+      }
     }
     return body;
   };

@@ -5,8 +5,8 @@ import app, { setDraining } from "./app";
 import config from "./config";
 import { logger } from "./utils/logger";
 import { initDb, closeDb, fetchLastIndexedLedger, persistLastIndexedLedger } from "./db";
-import { stellarHealth } from "./services/stellar";
-import { checkHealth, retryPendingPins, reconcilePendingPins } from "./services/ipfs";
+import { stellarHealth, stellarBreaker } from "./services/stellar";
+import { checkHealth, retryPendingPins, reconcilePendingPins, ipfsBreaker } from "./services/ipfs";
 import { indexEvents } from "./services/indexer";
 import { initBlocklist } from "./services/tokenBlocklist";
 import { startDecayTimer } from "./services/ipReputation";
@@ -26,6 +26,7 @@ import {
   initEventLoopMonitoring,
   initGcMonitoring,
   incUnhandledRejections,
+  registerCircuitBreaker,
 } from "./middleware/metrics";
 import { drainAllSessions, setAcceptingSseSessions } from "./routes/events";
 import { startRetentionJob, stopRetentionJob } from './services/retention';
@@ -47,6 +48,10 @@ async function start() {
   // expose scout_off_tier_divergence_total without a circular import (#1132).
   setTierDivergenceGetter(getTierDivergenceTotal);
 
+  // Register both circuit breakers so their states are exported as gauges
+  // and their transitions are counted (#1573).
+  registerCircuitBreaker(stellarBreaker);
+  registerCircuitBreaker(ipfsBreaker);
   // Initialize runtime metrics monitoring (event-loop lag, GC).
   initEventLoopMonitoring();
   initGcMonitoring();
