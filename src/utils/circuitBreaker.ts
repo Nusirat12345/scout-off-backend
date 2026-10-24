@@ -23,10 +23,16 @@
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export interface CircuitBreakerOptions {
-  /** Number of consecutive failures before opening. Default: 5 */
-  failureThreshold?: number;
-  /** Milliseconds to wait before moving from open → half-open. Default: 30000 */
-  resetTimeoutMs?: number;
+  /**
+   * Number of consecutive failures before opening. Required: callers pass the
+   * validated value from `config.circuitBreaker.*` (#1564).
+   */
+  failureThreshold: number;
+  /**
+   * Milliseconds to wait before moving from open → half-open. Required, for
+   * the same reason — this module reads no environment variables.
+   */
+  resetTimeoutMs: number;
   /** Human-readable name used in error messages and logs. */
   name?: string;
 }
@@ -47,20 +53,19 @@ export class CircuitBreaker {
   private readonly resetTimeoutMs: number;
   readonly name: string;
 
-  constructor(options: CircuitBreakerOptions = {}) {
+  /** Optional hook invoked after every state transition. */
+  onStateChange?: (from: string, to: string) => void;
+
+  constructor(options: CircuitBreakerOptions) {
     this.name = options.name ?? 'unknown';
-    this.failureThreshold =
-      options.failureThreshold ??
-      parseInt(process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD ?? '5', 10);
-    this.resetTimeoutMs =
-      options.resetTimeoutMs ??
-      parseInt(process.env.CIRCUIT_BREAKER_RESET_TIMEOUT_MS ?? '30000', 10);
+    this.failureThreshold = options.failureThreshold;
+    this.resetTimeoutMs = options.resetTimeoutMs;
   }
 
   getState(): CircuitState {
     if (this.state === 'open' && this.lastOpenedAt !== null) {
       if (Date.now() - this.lastOpenedAt >= this.resetTimeoutMs) {
-        this.state = 'half-open';
+        this._transition('half-open');
       }
     }
     return this.state;
@@ -88,17 +93,24 @@ export class CircuitBreaker {
     return this.getState() === 'open';
   }
 
+  private _transition(to: CircuitState): void {
+    if (this.state === to) return;
+    const from = this.state;
+    this.state = to;
+    this.onStateChange?.(from, to);
+  }
+
   private onSuccess(): void {
     this.failures = 0;
-    this.state = 'closed';
     this.lastOpenedAt = null;
+    this._transition('closed');
   }
 
   private onFailure(): void {
     this.failures += 1;
     if (this.state === 'half-open' || this.failures >= this.failureThreshold) {
-      this.state = 'open';
       this.lastOpenedAt = Date.now();
+      this._transition('open');
     }
   }
 
@@ -136,7 +148,7 @@ export class RetryingCircuitBreaker {
   private nextAttemptAt = 0;
   private config: CircuitBreakerConfig;
 
-  /** Human-readable name used in metrics labels. */
+  /** Human-readable name, used in metrics labels. */
   readonly name: string;
 
   /** Optional hook invoked after every state transition. */
@@ -231,4 +243,5 @@ export class RetryingCircuitBreaker {
   }
 }
 
-export const stellarBreaker = new RetryingCircuitBreaker({ name: 'stellar' });
+// The Stellar breaker instance itself lives in `src/services/stellarCore.ts`,
+// where it is constructed with `config.circuitBreaker.default` (#1564).
